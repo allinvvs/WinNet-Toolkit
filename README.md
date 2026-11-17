@@ -1,9 +1,11 @@
 ﻿# WinNet-Toolkit — Стабильный доступ к Telegram, YouTube и Discord без потери пинга
 
-![PowerShell](https://shields.io)
-![Windows](https://shields.io)
-![Security](https://shields.io)
-![Cost](https://shields.io)
+> **Платформа:** Windows 10 / 11 | **Язык:** PowerShell 5.1+ | **Безопасность:** Zero Open Ports | **Лицензия:** MIT (100% Free)
+
+
+
+
+
 
 **Бесплатный, открытый и безопасный инженерный инструмент на PowerShell для Windows 10/11.** Настраивает сетевой стек, защищает от подмены DNS, ускоряет видеопоток и разворачивает локальную маршрутизацию трафика так, чтобы заблокированные сервисы летали, а онлайн-игры и сайты РФ работали на максимальной скорости провайдера.
 
@@ -80,3 +82,4 @@ Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force; [Ne
 <sub>Теги для поиска: обход блокировок windows 10 11, не работает telegram connecting, тормозит youtube 4k, не работает discord rtc connecting, настройка clash verge rev tun mode, раздельное туннелирование split tunneling, powershell сетевая диагностика, проверка dns спуфинга.</sub>
 
 *Created & maintained by [allinvvs](https://github.com)*
+
