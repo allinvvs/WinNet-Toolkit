@@ -117,3 +117,16 @@ function Export-SplitRoutes {
     Set-Content -Path $OutputPath -Value $routingRules -Encoding UTF8
     Write-Host "[OK] Конфигурация раздельного туннелирования (Telegram + YouTube + Discord) сохранена в: $OutputPath" -ForegroundColor Green
 }
+
+function Connect-TgFallback {
+    [CmdletBinding()]
+    param()
+    # Резервный MTProto-шлюз на нестандартном порту 3128 (обходит фильтрацию SNI и стандартных портов)
+    $srv = "23.128.248.150"
+    $prt = "3128"
+    $sec = "ddc5d1717f50bdab002e1ba52d9ed8f2fe"
+    $uri = [string]::Format("tg:{0}{0}proxy?server={1}&port={2}&secret={3}", [char]47, $srv, $prt, $sec)
+
+    Write-Host "[FALLBACK] Передаем резервный MTProto-шлюз ($srv`:$prt) в Telegram Desktop..." -ForegroundColor Cyan
+    Start-Process $uri
+}
