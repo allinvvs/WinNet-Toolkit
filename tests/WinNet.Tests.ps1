@@ -62,4 +62,10 @@ Describe "DPI Engine Security and Rollback Unit Tests" {
         Test-Path $testLog | Should Be $true
         (Get-Content $testLog -Raw) | Should Match "\[OK\] Unit test message"
     }
+
+    It "Setup.bat uses pure ASCII without UTF-8 BOM and has .gitattributes" {
+        Test-Path (Join-Path $RepoRoot ".gitattributes") | Should Be $true
+        $bytes = [System.IO.File]::ReadAllBytes((Join-Path $RepoRoot "Setup.bat"))
+        ($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) | Should Be $false
+    }
 }
