@@ -29,7 +29,8 @@ function Wait-UserKey {
 
 function Show-WinNetMenu {
     Clear-Host
-    $winwsState = if (Get-Process -Name "winws" -ErrorAction SilentlyContinue) { "ACTIVE" } else { "STOPPED" }
+    $procObj    = Get-Process -Name "winws", "mihomo" -ErrorAction SilentlyContinue | Select-Object -First 1
+    $winwsState = if ($procObj) { "ACTIVE ($($procObj.Name))" } else { "STOPPED" }
     $taskObj    = Get-ScheduledTask -TaskName "WinNet-Toolkit-Watchdog" -ErrorAction SilentlyContinue
     $wdState    = if ($taskObj -and $taskObj.State -ne 'Disabled') { "ENABLED" } else { "DISABLED" }
     $configs    = @(Get-ChildItem -Path "$InstallDir\configs" -File -ErrorAction SilentlyContinue)

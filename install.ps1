@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-    WinNet-Toolkit v3.3 Hardened Installer
+    WinNet-Toolkit v4.0 Hardened Installer
 .DESCRIPTION
     Идемпотентный защищённый установщик:
     - Локальное развёртывание из распакованного архива с автоимпортом .yaml / .conf
@@ -152,12 +152,23 @@ if (Test-Path "$InstallDir\dpi-engine.ps1") {
 }
 
 Write-Host "`n============================================================" -ForegroundColor DarkCyan
-Write-Host "[ГОТОВО] WinNet-Toolkit v3.3 установлен в: $InstallDir" -ForegroundColor Green
+Write-Host "[ГОТОВО] WinNet-Toolkit v4.0 установлен в: $InstallDir" -ForegroundColor Green
 Write-Host "Доступные команды (в любом окне CMD / PowerShell): winnet | netcheck" -ForegroundColor Cyan
 Write-Host "============================================================`n" -ForegroundColor DarkCyan
 
-# --- 7. Автоматический запуск панели управления ---
-$cliScript = Join-Path $InstallDir "winnet-cli.ps1"
-if (-not $NoMenu -and [Environment]::UserInteractive -and (Test-Path $cliScript)) {
-    & $cliScript
+# --- 7. Автоматическая настройка "из коробки" в 2 клика ---
+if (-not $NoMenu -and [Environment]::UserInteractive) {
+    Write-Host "[AUTO] Выполняется автоматическая настройка соединения..." -ForegroundColor Cyan
+    Set-CleanDNS
+    Optimize-YouTubeStream
+    if (Start-DpiEngine -AutoProbe) {
+        Register-WinNetAutoStart
+    }
+    Write-Host "`n[SUCCESS] Интернет полностью настроен! Можете открывать YouTube, Discord и Telegram.`n" -ForegroundColor Green
+
+    $cliScript = Join-Path $InstallDir "winnet-cli.ps1"
+    if (Test-Path $cliScript) {
+        & $cliScript
+    }
 }
+

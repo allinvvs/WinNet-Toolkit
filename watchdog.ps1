@@ -64,15 +64,7 @@ try {
             continue
         }
 
-        $isEngineRunning = [bool](Get-Process -Name "winws" -ErrorAction SilentlyContinue)
-        $isTunUp         = [bool](Get-NetAdapter | Where-Object { $_.InterfaceDescription -match "Meta|Clash|wintun|Amnezia|WireGuard" -and $_.Status -eq "Up" })
-
-        # Если пользователь активировал внешний TUN-адаптер, не вмешиваемся в маршрутизацию
-        if ($isTunUp) {
-            $failCount = 0
-            Start-Sleep -Seconds 30
-            continue
-        }
+        $isEngineRunning = [bool](Get-Process -Name "winws", "mihomo" -ErrorAction SilentlyContinue)
 
         # 2. Проверяем работу ядра и реальный TLS Handshake
         $tlsHealthy = $false
