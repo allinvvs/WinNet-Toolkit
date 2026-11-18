@@ -177,6 +177,10 @@ function Optimize-YouTubeStream {
         Set-ItemProperty -Path $path -Name "QuicAllowed" -Value 0 -Type DWord
     }
 
+        if (-not (Get-NetFirewallRule -DisplayName "WinNet-Block-QUIC-UDP443" -ErrorAction SilentlyContinue)) {
+        New-NetFirewallRule -DisplayName "WinNet-Block-QUIC-UDP443" -Direction Outbound -Protocol UDP -RemotePort 443 -Action Block | Out-Null
+    }
+
     Write-WinNetLog "Политика QuicAllowed=0 применена для Chromium-браузеров." "OK"
     Write-Host "[OK] Оптимизация потокового видео (QuicAllowed=0) применена." -ForegroundColor Green
 }
@@ -211,61 +215,35 @@ function Initialize-MihomoCore {
     Set-StrictFolderAcl -TargetPath $script:BaseDir
 
     $mihomoExe = Join-Path $script:CoreDir "mihomo.exe"
-    $wintunDll = Join-Path $script:CoreDir "wintun.dll"
+    if (Test-Path $mihomoExe) { return $true }
 
+    Write-Host "[INFO] Загрузка автономного ядра Mihomo TUN..." -ForegroundColor Cyan
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     $headers = @{ "User-Agent" = "WinNet-Toolkit/4.0.1" }
+    $apiUrl  = ("https", "://api.", "github.com", "/repos/MetaCubeX/mihomo/releases/latest") -join ""
+    $zipPath = Join-Path $env:TEMP ("mihomo_" + [guid]::NewGuid().ToString("N") + ".zip")
+    $extPath = Join-Path $env:TEMP ("mihomo_ext_" + [guid]::NewGuid().ToString("N"))
 
-    # 1. Загрузка консольного ядра mihomo.exe
-    if (-not (Test-Path $mihomoExe)) {
-        Write-Host "[INFO] Загрузка автономного ядра Mihomo TUN..." -ForegroundColor Cyan
-        $apiUrl  = ("https", "://api.", "github.com", "/repos/MetaCubeX/mihomo/releases/latest") -join ""
-        $zipPath = Join-Path $env:TEMP ("mihomo_" + [guid]::NewGuid().ToString("N") + ".zip")
-        $extPath = Join-Path $env:TEMP ("mihomo_ext_" + [guid]::NewGuid().ToString("N"))
+    try {
+        $release = Invoke-RestMethod -Uri $apiUrl -Headers $headers -TimeoutSec 15
+        $asset   = $release.assets | Where-Object { $_.name -match "mihomo-windows-amd64-v1.*\.zip$" -or $_.name -match "mihomo-windows-amd64-[0-9].*\.zip$" } | Select-Object -First 1
+        if (-not $asset) { throw "Архив mihomo для Windows x64 не найден." }
 
-        try {
-            $release = Invoke-RestMethod -Uri $apiUrl -Headers $headers -TimeoutSec 15
-            $asset   = $release.assets | Where-Object { $_.name -match "mihomo-windows-amd64-v1.*\.zip$" -or $_.name -match "mihomo-windows-amd64-[0-9].*\.zip$" } | Select-Object -First 1
-            if (-not $asset) { throw "Архив mihomo для Windows x64 не найден." }
+        Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zipPath -Headers $headers -TimeoutSec 45 -UseBasicParsing
+        Expand-Archive -Path $zipPath -DestinationPath $extPath -Force
 
-            Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zipPath -Headers $headers -TimeoutSec 45 -UseBasicParsing
-            Expand-Archive -Path $zipPath -DestinationPath $extPath -Force
-
-            $exeFound = Get-ChildItem -Path $extPath -Filter "*.exe" -Recurse | Select-Object -First 1
-            if ($exeFound) {
-                Copy-Item -Path $exeFound.FullName -Destination $mihomoExe -Force
-                Write-WinNetLog "Ядро Mihomo развёрнуто из $($asset.name)." "OK"
-            }
-        } catch {
-            Write-WinNetLog "Ошибка загрузки Mihomo: $($_.Exception.Message)" "WARN"
-        } finally {
-            Remove-Item $zipPath, $extPath -Recurse -Force -ErrorAction SilentlyContinue
+        $exeFound = Get-ChildItem -Path $extPath -Filter "*.exe" -Recurse | Select-Object -First 1
+        if ($exeFound) {
+            Copy-Item -Path $exeFound.FullName -Destination $mihomoExe -Force
+            Write-WinNetLog "Ядро Mihomo развёрнуто из $($asset.name)." "OK"
         }
+    } catch {
+        Write-WinNetLog "Ошибка загрузки Mihomo: $($_.Exception.Message)" "WARN"
+    } finally {
+        Remove-Item $zipPath, $extPath -Recurse -Force -ErrorAction SilentlyContinue
     }
 
-    # 2. Загрузка драйвера виртуального адаптера wintun.dll (обязателен для TUN-режима)
-    if (-not (Test-Path $wintunDll)) {
-        Write-Host "[INFO] Загрузка драйвера виртуального сетевого адаптера Wintun..." -ForegroundColor Cyan
-        $wtUrl  = ("https", "://www.", "wintun.net", "/builds/wintun-0.14.1.zip") -join ""
-        $wtZip  = Join-Path $env:TEMP ("wintun_" + [guid]::NewGuid().ToString("N") + ".zip")
-        $wtExt  = Join-Path $env:TEMP ("wintun_ext_" + [guid]::NewGuid().ToString("N"))
-
-        try {
-            Invoke-WebRequest -Uri $wtUrl -OutFile $wtZip -Headers $headers -TimeoutSec 30 -UseBasicParsing
-            Expand-Archive -Path $wtZip -DestinationPath $wtExt -Force
-            $dllFound = Get-ChildItem -Path $wtExt -Filter "wintun.dll" -Recurse | Where-Object { $_.FullName -match "amd64" } | Select-Object -First 1
-            if ($dllFound) {
-                Copy-Item -Path $dllFound.FullName -Destination $wintunDll -Force
-                Write-WinNetLog "Драйвер wintun.dll (amd64) успешно установлен." "OK"
-            }
-        } catch {
-            Write-WinNetLog "Ошибка загрузки Wintun: $($_.Exception.Message)" "WARN"
-        } finally {
-            Remove-Item $wtZip, $wtExt -Recurse -Force -ErrorAction SilentlyContinue
-        }
-    }
-
-    return ((Test-Path $mihomoExe) -and (Test-Path $wintunDll))
+    return (Test-Path $mihomoExe)
 }
 
 function Start-MihomoEngine {
@@ -298,24 +276,29 @@ tun:
 
     $mihomoExe = Join-Path $script:CoreDir "mihomo.exe"
     Start-Process -FilePath $mihomoExe -ArgumentList "-d `"$script:CoreDir`" -f `"$runtimeYaml`"" -WorkingDirectory $script:CoreDir -WindowStyle Hidden
-    Start-Sleep -Seconds 4
+    Start-Sleep -Seconds 6
 
     if (-not (Get-Process -Name "mihomo" -ErrorAction SilentlyContinue)) {
         Write-WinNetLog "Процесс mihomo.exe завершился при запуске профиля $(Split-Path $YamlPath -Leaf)." "WARN"
         return $false
     }
 
-    # Fail-Safe проверка прохождения трафика через поднятый TUN-адаптер
+    # Даем виртуальному TUN-адаптеру до 3 попыток на установление туннеля
     $dcUrl = ("https", "://", "discord.com") -join ""
-    if (Test-ServiceReachable -Url $dcUrl -TimeoutSec 6) {
+    $tunnelReady = $false
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        if (Test-ServiceReachable -Url $dcUrl -TimeoutSec 4) {
+            $tunnelReady = $true
+            break
+        }
+        Start-Sleep -Seconds 2
+    }
+
+    if ($tunnelReady) {
         Set-Content -Path (Join-Path $script:BaseDir "active-mode.txt") -Value "MIHOMO" -Encoding ASCII
         Write-WinNetLog "Mihomo TUN активен и подтвержден с профилем: $(Split-Path $YamlPath -Leaf)." "OK"
         Write-Host "[ACTIVE] Гибридный режим Mihomo TUN запущен (Профиль: $(Split-Path $YamlPath -Leaf))!" -ForegroundColor Green
         return $true
-    } else {
-        Write-WinNetLog "Профиль $(Split-Path $YamlPath -Leaf) не ответил за 6 сек. Выполняется откат на DPI-режим." "WARN"
-        Stop-Process -Name "mihomo" -Force -ErrorAction SilentlyContinue
-        return $false
     }
 }
 
@@ -430,29 +413,26 @@ function Start-DpiEngine {
     $presetFile = Join-Path $script:BaseDir "active-preset.txt"
     $presets = @(
         @{
-            Name = "Preset-1 (Universal Multisplit + BadSeq/MD5Sig)"
+            Name = "Preset-1 (Media-Boost Multidisorder + AutoTTL)"
             Args = @(
-                "--wf-tcp=80,443", "--wf-udp=443,50000-65535",
-                "--filter-tcp=443", "--dpi-desync=fake,multisplit", "--dpi-desync-split-pos=1,midsld", "--dpi-desync-split-seqovl=1", "--dpi-desync-fooling=badseq,md5sig", "--dpi-desync-repeats=6",
-                "--new", "--filter-udp=443", "--dpi-desync=fake", "--dpi-desync-repeats=6",
-                "--new", "--filter-udp=50000-65535", "--filter-l7=discord,stun", "--dpi-desync=fake", "--dpi-desync-repeats=6"
+                "--wf-tcp=80,443", "--wf-udp=50000-65535",
+                "--filter-tcp=443", "--dpi-desync=fake,multidisorder", "--dpi-desync-split-pos=1,midsld", "--dpi-desync-split-seqovl=2", "--dpi-desync-fooling=badseq,md5sig", "--dpi-desync-autottl=2", "--dpi-desync-repeats=8",
+                "--new", "--filter-udp=50000-65535", "--filter-l7=discord,stun", "--dpi-desync=fake", "--dpi-desync-repeats=8"
             )
         },
         @{
-            Name = "Preset-2 (Multidisorder + MD5Sig)"
+            Name = "Preset-2 (Universal Multisplit + BadSeq/MD5Sig)"
             Args = @(
-                "--wf-tcp=80,443", "--wf-udp=443,50000-65535",
-                "--filter-tcp=443", "--dpi-desync=fake,multidisorder", "--dpi-desync-split-pos=1,midsld", "--dpi-desync-fooling=badseq,md5sig", "--dpi-desync-repeats=6",
-                "--new", "--filter-udp=443", "--dpi-desync=fake", "--dpi-desync-repeats=6",
+                "--wf-tcp=80,443", "--wf-udp=50000-65535",
+                "--filter-tcp=443", "--dpi-desync=fake,multisplit", "--dpi-desync-split-pos=1,midsld", "--dpi-desync-split-seqovl=1", "--dpi-desync-fooling=badseq,md5sig", "--dpi-desync-repeats=6",
                 "--new", "--filter-udp=50000-65535", "--filter-l7=discord,stun", "--dpi-desync=fake", "--dpi-desync-repeats=6"
             )
         },
         @{
             Name = "Preset-3 (Split2 + BadSum Fallback)"
             Args = @(
-                "--wf-tcp=80,443", "--wf-udp=443,50000-65535",
+                "--wf-tcp=80,443", "--wf-udp=50000-65535",
                 "--filter-tcp=443", "--dpi-desync=split2", "--dpi-desync-split-pos=2", "--dpi-desync-fooling=badsum",
-                "--new", "--filter-udp=443", "--dpi-desync=fake", "--dpi-desync-repeats=6",
                 "--new", "--filter-udp=50000-65535", "--filter-l7=discord,stun", "--dpi-desync=fake", "--dpi-desync-repeats=6"
             )
         }
