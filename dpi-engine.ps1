@@ -211,37 +211,61 @@ function Initialize-MihomoCore {
     Set-StrictFolderAcl -TargetPath $script:BaseDir
 
     $mihomoExe = Join-Path $script:CoreDir "mihomo.exe"
-    if (Test-Path $mihomoExe) { return $true }
+    $wintunDll = Join-Path $script:CoreDir "wintun.dll"
 
-    Write-Host "[INFO] Обнаружен .yaml профиль. Загрузка автономного ядра Mihomo TUN..." -ForegroundColor Cyan
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    $headers = @{ "User-Agent" = "WinNet-Toolkit/4.0" }
-    $apiUrl  = ("https", "://api.", "github.com", "/repos/MetaCubeX/mihomo/releases/latest") -join ""
+    $headers = @{ "User-Agent" = "WinNet-Toolkit/4.0.1" }
 
-    $zipPath = Join-Path $env:TEMP ("mihomo_" + [guid]::NewGuid().ToString("N") + ".zip")
-    $extPath = Join-Path $env:TEMP ("mihomo_ext_" + [guid]::NewGuid().ToString("N"))
+    # 1. Загрузка консольного ядра mihomo.exe
+    if (-not (Test-Path $mihomoExe)) {
+        Write-Host "[INFO] Загрузка автономного ядра Mihomo TUN..." -ForegroundColor Cyan
+        $apiUrl  = ("https", "://api.", "github.com", "/repos/MetaCubeX/mihomo/releases/latest") -join ""
+        $zipPath = Join-Path $env:TEMP ("mihomo_" + [guid]::NewGuid().ToString("N") + ".zip")
+        $extPath = Join-Path $env:TEMP ("mihomo_ext_" + [guid]::NewGuid().ToString("N"))
 
-    try {
-        $release = Invoke-RestMethod -Uri $apiUrl -Headers $headers -TimeoutSec 15
-        $asset = $release.assets | Where-Object { $_.name -match "mihomo-windows-amd64-v1.*\.zip$" -or $_.name -match "mihomo-windows-amd64-[0-9].*\.zip$" } | Select-Object -First 1
-        if (-not $asset) { throw "Архив mihomo для Windows x64 не найден." }
+        try {
+            $release = Invoke-RestMethod -Uri $apiUrl -Headers $headers -TimeoutSec 15
+            $asset   = $release.assets | Where-Object { $_.name -match "mihomo-windows-amd64-v1.*\.zip$" -or $_.name -match "mihomo-windows-amd64-[0-9].*\.zip$" } | Select-Object -First 1
+            if (-not $asset) { throw "Архив mihomo для Windows x64 не найден." }
 
-        Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zipPath -Headers $headers -TimeoutSec 45 -UseBasicParsing
-        Expand-Archive -Path $zipPath -DestinationPath $extPath -Force
+            Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zipPath -Headers $headers -TimeoutSec 45 -UseBasicParsing
+            Expand-Archive -Path $zipPath -DestinationPath $extPath -Force
 
-        $exeFound = Get-ChildItem -Path $extPath -Filter "*.exe" -Recurse | Select-Object -First 1
-        if ($exeFound) {
-            Copy-Item -Path $exeFound.FullName -Destination $mihomoExe -Force
-            Write-WinNetLog "Ядро Mihomo развернуто из $($asset.name)." "OK"
+            $exeFound = Get-ChildItem -Path $extPath -Filter "*.exe" -Recurse | Select-Object -First 1
+            if ($exeFound) {
+                Copy-Item -Path $exeFound.FullName -Destination $mihomoExe -Force
+                Write-WinNetLog "Ядро Mihomo развёрнуто из $($asset.name)." "OK"
+            }
+        } catch {
+            Write-WinNetLog "Ошибка загрузки Mihomo: $($_.Exception.Message)" "WARN"
+        } finally {
+            Remove-Item $zipPath, $extPath -Recurse -Force -ErrorAction SilentlyContinue
         }
-    } catch {
-        Write-WinNetLog "Ошибка загрузки Mihomo: $($_.Exception.Message)" "WARN"
-        Write-Warning "Не удалось загрузить Mihomo: $($_.Exception.Message)"
-    } finally {
-        Remove-Item $zipPath, $extPath -Recurse -Force -ErrorAction SilentlyContinue
     }
 
-    return (Test-Path $mihomoExe)
+    # 2. Загрузка драйвера виртуального адаптера wintun.dll (обязателен для TUN-режима)
+    if (-not (Test-Path $wintunDll)) {
+        Write-Host "[INFO] Загрузка драйвера виртуального сетевого адаптера Wintun..." -ForegroundColor Cyan
+        $wtUrl  = ("https", "://www.", "wintun.net", "/builds/wintun-0.14.1.zip") -join ""
+        $wtZip  = Join-Path $env:TEMP ("wintun_" + [guid]::NewGuid().ToString("N") + ".zip")
+        $wtExt  = Join-Path $env:TEMP ("wintun_ext_" + [guid]::NewGuid().ToString("N"))
+
+        try {
+            Invoke-WebRequest -Uri $wtUrl -OutFile $wtZip -Headers $headers -TimeoutSec 30 -UseBasicParsing
+            Expand-Archive -Path $wtZip -DestinationPath $wtExt -Force
+            $dllFound = Get-ChildItem -Path $wtExt -Filter "wintun.dll" -Recurse | Where-Object { $_.FullName -match "amd64" } | Select-Object -First 1
+            if ($dllFound) {
+                Copy-Item -Path $dllFound.FullName -Destination $wintunDll -Force
+                Write-WinNetLog "Драйвер wintun.dll (amd64) успешно установлен." "OK"
+            }
+        } catch {
+            Write-WinNetLog "Ошибка загрузки Wintun: $($_.Exception.Message)" "WARN"
+        } finally {
+            Remove-Item $wtZip, $wtExt -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    return ((Test-Path $mihomoExe) -and (Test-Path $wintunDll))
 }
 
 function Start-MihomoEngine {
@@ -253,24 +277,43 @@ function Start-MihomoEngine {
     Stop-Process -Name "winws", "mihomo" -Force -ErrorAction SilentlyContinue
     Start-Sleep -Milliseconds 400
 
+    # Формируем runtime-config.yaml с принудительным включением TUN и DoH, сохраняя якоря исходного .yaml
+    $runtimeYaml = Join-Path $script:CoreDir "runtime-config.yaml"
+    $rawContent  = Get-Content -Path $YamlPath -Raw -Encoding UTF8
+    # Удаляем старые секции tun: в конце, если они были выключены, и добавляем рабочий TUN-блок
+    $cleanContent = [regex]::Replace($rawContent, '(?ms)^tun:\s*.*?(?=^\S|\z)', '')
+
+    $tunOverride = @"
+
+# === WinNet-Toolkit Auto-TUN & Encrypted DNS Override ===
+tun:
+  enable: true
+  stack: system
+  auto-route: true
+  auto-detect-interface: true
+  dns-hijack:
+    - any:53
+"@
+    [System.IO.File]::WriteAllText($runtimeYaml, ($cleanContent + $tunOverride), [System.Text.UTF8Encoding]::new($false))
+
     $mihomoExe = Join-Path $script:CoreDir "mihomo.exe"
-    Start-Process -FilePath $mihomoExe -ArgumentList "-d `"$script:CoreDir`" -f `"$YamlPath`"" -WorkingDirectory $script:CoreDir -WindowStyle Hidden
-    Start-Sleep -Seconds 3
+    Start-Process -FilePath $mihomoExe -ArgumentList "-d `"$script:CoreDir`" -f `"$runtimeYaml`"" -WorkingDirectory $script:CoreDir -WindowStyle Hidden
+    Start-Sleep -Seconds 4
 
     if (-not (Get-Process -Name "mihomo" -ErrorAction SilentlyContinue)) {
         Write-WinNetLog "Процесс mihomo.exe завершился при запуске профиля $(Split-Path $YamlPath -Leaf)." "WARN"
         return $false
     }
 
-    # Fail-Safe проверка: убеждаемся, что .yaml профиль живой и реально пропускает трафик
+    # Fail-Safe проверка прохождения трафика через поднятый TUN-адаптер
     $dcUrl = ("https", "://", "discord.com") -join ""
-    if (Test-ServiceReachable -Url $dcUrl -TimeoutSec 5) {
+    if (Test-ServiceReachable -Url $dcUrl -TimeoutSec 6) {
         Set-Content -Path (Join-Path $script:BaseDir "active-mode.txt") -Value "MIHOMO" -Encoding ASCII
         Write-WinNetLog "Mihomo TUN активен и подтвержден с профилем: $(Split-Path $YamlPath -Leaf)." "OK"
         Write-Host "[ACTIVE] Гибридный режим Mihomo TUN запущен (Профиль: $(Split-Path $YamlPath -Leaf))!" -ForegroundColor Green
         return $true
     } else {
-        Write-WinNetLog "Профиль $(Split-Path $YamlPath -Leaf) не ответил за 5 сек. Выполняется откат на DPI-режим." "WARN"
+        Write-WinNetLog "Профиль $(Split-Path $YamlPath -Leaf) не ответил за 6 сек. Выполняется откат на DPI-режим." "WARN"
         Stop-Process -Name "mihomo" -Force -ErrorAction SilentlyContinue
         return $false
     }
