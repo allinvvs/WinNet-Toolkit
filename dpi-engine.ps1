@@ -290,22 +290,22 @@ function Start-DpiEngine {
     # Набор проверенных стратегий против разных конфигураций ТСПУ
     $presets = @(
         @{
-            Name = "Preset-1 (Multidisorder + BadSeq)"
+            Name = "Preset-1 (Multisplit + BadSeq/MD5Sig)"
+            Args = @(
+                "--wf-tcp=80,443", "--wf-udp=443,50000-65535",
+                "--filter-tcp=443", "--hostlist=`"$script:ListFile`"", "--dpi-desync=fake,multisplit", "--dpi-desync-split-pos=1,midsld", "--dpi-desync-split-seqovl=1", "--dpi-desync-fooling=badseq,md5sig", "--dpi-desync-repeats=6",
+                "--new", "--filter-udp=443", "--hostlist=`"$script:ListFile`"", "--dpi-desync=fake", "--dpi-desync-repeats=6",
+                "--new", "--filter-udp=50000-65535", "--filter-l7=discord,stun", "--dpi-desync=fake", "--dpi-desync-repeats=6"
+            )
+        },
+        @{
+            Name = "Preset-2 (Multidisorder + MD5Sig)"
             Args = @(
                 "--wf-tcp=80,443", "--wf-udp=443,50000-65535",
                 "--filter-tcp=80", "--hostlist=`"$script:ListFile`"", "--dpi-desync=fake,split2", "--dpi-desync-fooling=md5sig",
                 "--new", "--filter-tcp=443", "--hostlist=`"$script:ListFile`"", "--dpi-desync=fake,multidisorder", "--dpi-desync-split-pos=1,midsld", "--dpi-desync-fooling=badseq,md5sig", "--dpi-desync-repeats=6",
                 "--new", "--filter-udp=443", "--hostlist=`"$script:ListFile`"", "--dpi-desync=fake", "--dpi-desync-repeats=6",
                 "--new", "--filter-udp=50000-65535", "--filter-l7=discord,stun", "--dpi-desync=fake", "--dpi-desync-repeats=6"
-            )
-        },
-        @{
-            Name = "Preset-2 (Aggressive Multisplit + SeqOvl)"
-            Args = @(
-                "--wf-tcp=80,443", "--wf-udp=443,50000-65535",
-                "--filter-tcp=443", "--hostlist=`"$script:ListFile`"", "--dpi-desync=fake,multisplit", "--dpi-desync-split-pos=1,midsld", "--dpi-desync-split-seqovl=2", "--dpi-desync-fooling=badseq", "--dpi-desync-repeats=8",
-                "--new", "--filter-udp=443", "--hostlist=`"$script:ListFile`"", "--dpi-desync=fake", "--dpi-desync-repeats=8",
-                "--new", "--filter-udp=50000-65535", "--filter-l7=discord,stun", "--dpi-desync=fake", "--dpi-desync-repeats=8"
             )
         },
         @{
@@ -334,7 +334,8 @@ function Start-DpiEngine {
         Start-Sleep -Milliseconds 300
 
         Start-Process -FilePath "$script:CoreDir\winws.exe" -ArgumentList $current.Args -WorkingDirectory $script:CoreDir -WindowStyle Hidden
-        Start-Sleep -Milliseconds 800
+        # Даем драйверу WinDivert64.sys 2 секунды на полную инициализацию в ядре
+        Start-Sleep -Seconds 2
 
         if (-not (Get-Process -Name "winws" -ErrorAction SilentlyContinue)) {
             continue
@@ -343,13 +344,12 @@ function Start-DpiEngine {
         # Если включен AutoProbe или несколько пресетов — проверяем реальное пробитие заглушки
         if ($AutoProbe -or $indices.Count -gt 1) {
             Write-Host "[PROBE] Проверка стратегии: $($current.Name)..." -ForegroundColor Cyan
-            $ytOk = Test-ServiceReachable -Url "https://youtube.com" -TimeoutSec 3
-            $dcOk = Test-ServiceReachable -Url "https://discord.com" -TimeoutSec 3
+            $dcOk = Test-ServiceReachable -Url "https://discord.com" -TimeoutSec 4
 
-            if ($ytOk -and $dcOk) {
+            if ($dcOk) {
                 Set-Content -Path $presetFile -Value $idx -Encoding ASCII
                 Write-WinNetLog "Подобрана и активирована рабочая стратегия: $($current.Name)." "OK"
-                Write-Host "[ACTIVE] Ядро активно ($($current.Name)) — YouTube и Discord доступны!" -ForegroundColor Green
+                Write-Host "[ACTIVE] Ядро активно ($($current.Name)) — соединение подтверждено!" -ForegroundColor Green
                 return $true
             }
         } else {
