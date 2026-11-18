@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-    WinNet-Toolkit v3.2 Automated Test Suite (Compatible with PowerShell 5.1+ & Pester 3.4/5+)
+    WinNet-Toolkit v3.4 Automated Test Suite (Compatible with PowerShell 5.1+ & Pester 3.4/5+)
 #>
 
 $here = if ($PSScriptRoot) { $PSScriptRoot } else { Join-Path $PWD "Tests" }
@@ -31,19 +31,27 @@ Describe "WinNet-Toolkit Syntax and Architecture Validation" {
             $content | Should Not Match "FromBase64String"
         }
     }
+
+    It "Watchdog integrates AutoProbe recovery and SslStream TLS verification" {
+        $wdContent = Get-Content -Path (Join-Path $RepoRoot "watchdog.ps1") -Raw
+        $wdContent | Should Match "-AutoProbe"
+        $wdContent | Should Match "SslStream"
+    }
 }
 
-Describe "DPI Engine Security and Rollback Unit Tests" {
+Describe "DPI Engine Security, Hardening and Rollback Unit Tests" {
     . (Join-Path $RepoRoot "dpi-engine.ps1")
 
-    It "Exports all required management and rollback functions" {
+    It "Exports all required management, hardening and rollback functions" {
         $expectedFunctions = @(
             "Write-WinNetLog",
+            "Set-StrictFolderAcl",
             "Backup-NetworkState",
             "Restore-NetworkState",
             "Set-CleanDNS",
             "Optimize-YouTubeStream",
             "Initialize-DpiCore",
+            "Test-ServiceReachable",
             "Start-DpiEngine",
             "Stop-DpiEngine",
             "Register-WinNetAutoStart",
@@ -52,6 +60,11 @@ Describe "DPI Engine Security and Rollback Unit Tests" {
         foreach ($fn in $expectedFunctions) {
             (Get-Command $fn -ErrorAction SilentlyContinue) -ne $null | Should Be $true
         }
+    }
+
+    It "Start-DpiEngine supports the -AutoProbe switch parameter" {
+        $cmd = Get-Command Start-DpiEngine
+        $cmd.Parameters.ContainsKey("AutoProbe") | Should Be $true
     }
 
     It "Write-WinNetLog writes structured entries to the log file" {
@@ -69,3 +82,4 @@ Describe "DPI Engine Security and Rollback Unit Tests" {
         ($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) | Should Be $false
     }
 }
+

@@ -95,7 +95,7 @@ try {
         Write-WinNetLog "Обнаружен сбой ядра или TLS (попытка #$failCount). Перезапуск через $backoff сек." "WARN"
 
         Start-Sleep -Seconds $backoff
-        Start-DpiEngine | Out-Null
+        Start-DpiEngine -AutoProbe | Out-Null
     }
 }
 finally {

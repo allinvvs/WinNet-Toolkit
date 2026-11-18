@@ -252,9 +252,32 @@ function Initialize-DpiCore {
     return ((Test-Path "$script:CoreDir\winws.exe") -and (Test-Path "$script:CoreDir\cygwin1.dll"))
 }
 
+function Test-ServiceReachable {
+    [CmdletBinding()]
+    param(
+        [string]$Url = "https://youtube.com",
+        [int]$TimeoutSec = 3
+    )
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $req = [System.Net.HttpWebRequest]::Create($Url)
+        $req.Method = "HEAD"
+        $req.Timeout = $TimeoutSec * 1000
+        $req.ReadWriteTimeout = $TimeoutSec * 1000
+        $req.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        $resp = $req.GetResponse()
+        $resp.Close()
+        return $true
+    } catch {
+        return $false
+    }
+}
+
 function Start-DpiEngine {
     [CmdletBinding()]
-    param()
+    param(
+        [switch]$AutoProbe
+    )
 
     if (-not (Initialize-DpiCore)) {
         Write-Host "[ERROR] Не найдены файлы ядра (winws.exe / cygwin1.dll). Запуск отменен." -ForegroundColor Red
@@ -262,43 +285,90 @@ function Start-DpiEngine {
         return $false
     }
 
-    Stop-Process -Name "winws" -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Milliseconds 400
+    $presetFile = Join-Path $script:BaseDir "active-preset.txt"
 
-    $argsList = @(
-        "--wf-tcp=80,443",
-        "--wf-udp=443,50000-65535",
-        "--filter-tcp=443",
-        "--hostlist=`"$script:ListFile`"",
-        "--dpi-desync=fake,multisplit",
-        "--dpi-desync-split-pos=1,midsld",
-        "--dpi-desync-split-seqovl=1",
-        "--dpi-desync-fooling=badseq,md5sig",
-        "--dpi-desync-repeats=6",
-        "--new",
-        "--filter-udp=443",
-        "--hostlist=`"$script:ListFile`"",
-        "--dpi-desync=fake",
-        "--dpi-desync-repeats=6",
-        "--new",
-        "--filter-udp=50000-65535",
-        "--filter-l7=discord,stun",
-        "--dpi-desync=fake",
-        "--dpi-desync-repeats=6"
+    # Набор проверенных стратегий против разных конфигураций ТСПУ
+    $presets = @(
+        @{
+            Name = "Preset-1 (Multidisorder + BadSeq)"
+            Args = @(
+                "--wf-tcp=80,443", "--wf-udp=443,50000-65535",
+                "--filter-tcp=80", "--hostlist=`"$script:ListFile`"", "--dpi-desync=fake,split2", "--dpi-desync-fooling=md5sig",
+                "--new", "--filter-tcp=443", "--hostlist=`"$script:ListFile`"", "--dpi-desync=fake,multidisorder", "--dpi-desync-split-pos=1,midsld", "--dpi-desync-fooling=badseq,md5sig", "--dpi-desync-repeats=6",
+                "--new", "--filter-udp=443", "--hostlist=`"$script:ListFile`"", "--dpi-desync=fake", "--dpi-desync-repeats=6",
+                "--new", "--filter-udp=50000-65535", "--filter-l7=discord,stun", "--dpi-desync=fake", "--dpi-desync-repeats=6"
+            )
+        },
+        @{
+            Name = "Preset-2 (Aggressive Multisplit + SeqOvl)"
+            Args = @(
+                "--wf-tcp=80,443", "--wf-udp=443,50000-65535",
+                "--filter-tcp=443", "--hostlist=`"$script:ListFile`"", "--dpi-desync=fake,multisplit", "--dpi-desync-split-pos=1,midsld", "--dpi-desync-split-seqovl=2", "--dpi-desync-fooling=badseq", "--dpi-desync-repeats=8",
+                "--new", "--filter-udp=443", "--hostlist=`"$script:ListFile`"", "--dpi-desync=fake", "--dpi-desync-repeats=8",
+                "--new", "--filter-udp=50000-65535", "--filter-l7=discord,stun", "--dpi-desync=fake", "--dpi-desync-repeats=8"
+            )
+        },
+        @{
+            Name = "Preset-3 (Split2 + BadSum Fallback)"
+            Args = @(
+                "--wf-tcp=80,443", "--wf-udp=443,50000-65535",
+                "--filter-tcp=443", "--hostlist=`"$script:ListFile`"", "--dpi-desync=split2", "--dpi-desync-split-pos=2", "--dpi-desync-fooling=badsum",
+                "--new", "--filter-udp=443", "--hostlist=`"$script:ListFile`"", "--dpi-desync=fake", "--dpi-desync-repeats=6",
+                "--new", "--filter-udp=50000-65535", "--filter-l7=discord,stun", "--dpi-desync=fake", "--dpi-desync-repeats=6"
+            )
+        }
     )
 
-    Start-Process -FilePath "$script:CoreDir\winws.exe" -ArgumentList $argsList -WorkingDirectory $script:CoreDir -WindowStyle Hidden
-    Start-Sleep -Seconds 1
-
-    if (Get-Process -Name "winws" -ErrorAction SilentlyContinue) {
-        Write-WinNetLog "DPI-движок (winws.exe) успешно запущен." "OK"
-        Write-Host "[ACTIVE] Ядро активно и работает в фоне (Telegram, YouTube, Discord)." -ForegroundColor Green
-        return $true
-    } else {
-        Write-WinNetLog "Процесс winws.exe аварийно завершился при старте." "ERROR"
-        Write-Host "[ERROR] Процесс winws.exe завершился при старте." -ForegroundColor Red
-        return $false
+    # Определяем порядок перебора (сначала сохраненный рабочий пресет, если не включен принудительный AutoProbe)
+    $indices = 0..($presets.Count - 1)
+    if (-not $AutoProbe -and (Test-Path $presetFile)) {
+        $savedIdx = [int](Get-Content $presetFile -Raw).Trim()
+        if ($savedIdx -ge 0 -and $savedIdx -lt $presets.Count) {
+            $indices = @($savedIdx) + ($indices | Where-Object { $_ -ne $savedIdx })
+        }
     }
+
+    foreach ($idx in $indices) {
+        $current = $presets[$idx]
+        Stop-Process -Name "winws" -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Milliseconds 300
+
+        Start-Process -FilePath "$script:CoreDir\winws.exe" -ArgumentList $current.Args -WorkingDirectory $script:CoreDir -WindowStyle Hidden
+        Start-Sleep -Milliseconds 800
+
+        if (-not (Get-Process -Name "winws" -ErrorAction SilentlyContinue)) {
+            continue
+        }
+
+        # Если включен AutoProbe или несколько пресетов — проверяем реальное пробитие заглушки
+        if ($AutoProbe -or $indices.Count -gt 1) {
+            Write-Host "[PROBE] Проверка стратегии: $($current.Name)..." -ForegroundColor Cyan
+            $ytOk = Test-ServiceReachable -Url "https://youtube.com" -TimeoutSec 3
+            $dcOk = Test-ServiceReachable -Url "https://discord.com" -TimeoutSec 3
+
+            if ($ytOk -and $dcOk) {
+                Set-Content -Path $presetFile -Value $idx -Encoding ASCII
+                Write-WinNetLog "Подобрана и активирована рабочая стратегия: $($current.Name)." "OK"
+                Write-Host "[ACTIVE] Ядро активно ($($current.Name)) — YouTube и Discord доступны!" -ForegroundColor Green
+                return $true
+            }
+        } else {
+            Write-WinNetLog "DPI-движок запущен ($($current.Name))." "OK"
+            Write-Host "[ACTIVE] Ядро активно ($($current.Name))." -ForegroundColor Green
+            return $true
+        }
+    }
+
+    # Если ни один пресет не пробил оба узла сразу, оставляем первый активным для базовой фильтрации
+    if (Get-Process -Name "winws" -ErrorAction SilentlyContinue) {
+        Write-WinNetLog "Ядро запущено в базовом режиме (полное пробитие не подтверждено)." "WARN"
+        Write-Host "[ACTIVE] Ядро запущено, но часть узлов может требовать ручного выбора профиля (.yaml)." -ForegroundColor Yellow
+        return $true
+    }
+
+    Write-WinNetLog "Не удалось запустить DPI-движок ни с одним пресетом." "ERROR"
+    Write-Host "[ERROR] Процесс winws.exe не смог запуститься." -ForegroundColor Red
+    return $false
 }
 
 function Stop-DpiEngine {

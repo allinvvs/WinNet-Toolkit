@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-    WinNet-Toolkit CLI v3.3: Интерактивная консоль управления с автопроверкой прав и просмотром логов.
+    WinNet-Toolkit CLI v3.4: Интерактивная консоль управления с автопроверкой прав, AutoProbe и просмотром логов.
 #>
 
 #Requires -Version 5.1
@@ -34,17 +34,25 @@ function Show-WinNetMenu {
     $wdState    = if ($taskObj -and $taskObj.State -ne 'Disabled') { "ENABLED" } else { "DISABLED" }
     $configs    = @(Get-ChildItem -Path "$InstallDir\configs" -File -ErrorAction SilentlyContinue)
 
+    $presetFile = Join-Path $InstallDir "active-preset.txt"
+    $presetInfo = if (Test-Path $presetFile) {
+        $idx = [int](Get-Content $presetFile -Raw).Trim() + 1
+        "Preset #$idx"
+    } else {
+        "Auto"
+    }
+
     Write-Host "============================================================" -ForegroundColor DarkCyan
-    Write-Host "               WinNet-Toolkit v3.3 Control Panel            " -ForegroundColor Cyan
+    Write-Host "               WinNet-Toolkit v3.4 Control Panel            " -ForegroundColor Cyan
     Write-Host "============================================================" -ForegroundColor DarkCyan
-    Write-Host "  DPI-ядро: [$winwsState]  |  Автозапуск Watchdog: [$wdState]" -ForegroundColor Gray
+    Write-Host "  DPI-ядро: [$winwsState ($presetInfo)]  |  Watchdog: [$wdState]" -ForegroundColor Gray
     if ($configs.Count -gt 0) {
         Write-Host "  Импортированные профили: $($configs.Name -join ', ')" -ForegroundColor Green
     }
     Write-Host "------------------------------------------------------------" -ForegroundColor DarkCyan
-    Write-Host "  [1] Автонастройка в 1 клик (DNS + YouTube + DPI + Автозапуск)"
+    Write-Host "  [1] Автонастройка в 1 клик (DNS + YouTube + AutoProbe + Watchdog)"
     Write-Host "  [2] Запустить диагностику сети (netcheck)"
-    Write-Host "  [3] Запустить / Перезапустить DPI-ядро"
+    Write-Host "  [3] Запустить / Переподобрать стратегию DPI-ядра (AutoProbe)"
     Write-Host "  [4] Остановить DPI-ядро"
     Write-Host "  [5] Настроить чистые DNS (IPv4 + IPv6) и QUIC"
     Write-Host "  [6] Включить автозапуск и фоновый Watchdog"
@@ -65,13 +73,13 @@ while ($true) {
             "1" {
                 Set-CleanDNS
                 Optimize-YouTubeStream
-                if (Start-DpiEngine) {
+                if (Start-DpiEngine -AutoProbe) {
                     Register-WinNetAutoStart
                 }
                 Wait-UserKey
             }
             "2" { Invoke-NetCheck; Wait-UserKey }
-            "3" { Start-DpiEngine | Out-Null; Wait-UserKey }
+            "3" { Start-DpiEngine -AutoProbe | Out-Null; Wait-UserKey }
             "4" { Stop-DpiEngine; Wait-UserKey }
             "5" { Set-CleanDNS; Optimize-YouTubeStream; Wait-UserKey }
             "6" { Register-WinNetAutoStart; Wait-UserKey }
