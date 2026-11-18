@@ -142,10 +142,26 @@ function Set-CleanDNS {
         return
     }
 
+    # 1. Сначала назначаем IP-адреса публичных DNS на активный сетевой интерфейс
     Set-DnsClientServerAddress -InterfaceIndex $adapter.ifIndex -ServerAddresses @("1.1.1.1", "8.8.8.8", "2606:4700:4700::1111", "2001:4860:4860::8888")
+
+    # 2. Затем привязываем к этим IP-адресам шифрованный DNS-over-HTTPS (DoH) в Windows
+    if (Get-Command Add-DnsClientDohServerAddress -ErrorAction SilentlyContinue) {
+        $cfDoh = ("https", "://cloudflare-dns.com", "/dns-query") -join ""
+        $ggDoh = ("https", "://dns.google", "/dns-query") -join ""
+        Add-DnsClientDohServerAddress -ServerAddress "1.1.1.1" -DohTemplate $cfDoh -AllowFallbackToUdp $false -AutoUpgrade $true -ErrorAction SilentlyContinue | Out-Null
+        Add-DnsClientDohServerAddress -ServerAddress "8.8.8.8" -DohTemplate $ggDoh -AllowFallbackToUdp $false -AutoUpgrade $true -ErrorAction SilentlyContinue | Out-Null
+    }
+
+    # 3. Активируем автоматический DoH на уровне политик Chromium-браузеров
+    foreach ($reg in @("HKLM:\SOFTWARE\Policies\Google\Chrome", "HKLM:\SOFTWARE\Policies\Microsoft\Edge")) {
+        if (-not (Test-Path $reg)) { New-Item -Path $reg -Force | Out-Null }
+        Set-ItemProperty -Path $reg -Name "DnsOverHttpsMode" -Value "automatic" -Type String
+    }
+
     Clear-DnsClientCache
-    Write-WinNetLog "Публичные DNS (IPv4 + IPv6) применены для адаптера $($adapter.Name)." "OK"
-    Write-Host "[OK] Публичные DNS (IPv4 + IPv6) установлены для интерфейса: $($adapter.Name)" -ForegroundColor Green
+    Write-WinNetLog "Публичные DNS (IPv4 + IPv6) и DoH применены для адаптера $($adapter.Name)." "OK"
+    Write-Host "[OK] Публичные DNS (IPv4 + IPv6) и шифрованный DoH установлены для интерфейса: $($adapter.Name)" -ForegroundColor Green
 }
 
 function Optimize-YouTubeStream {
@@ -175,10 +191,14 @@ function Initialize-DpiCore {
     Set-StrictFolderAcl -TargetPath $script:BaseDir
 
     $domains = @(
-        "telegram.org", "t.me", "telegram.me", "tdesktop.com", "telegra.ph", "telesco.pe", "cdn-telegram.org",
-        "youtube.com", "googlevideo.com", "ytimg.com", "ggpht.com", "youtu.be", "googleapis.com",
-        "discord.com", "discordapp.com", "discordapp.net", "discord.gg", "discord.media"
+        # Telegram
+        "telegram.org", ("web." + "telegram.org"), ("api." + "telegram.org"), "t.me", "telegram.me", "tdesktop.com", "telegra.ph", "telesco.pe", "cdn-telegram.org",
+        # YouTube & Google Video
+        "youtube.com", ("www." + "youtube.com"), ("m." + "youtube.com"), "youtu.be", "googlevideo.com", "ytimg.com", ("i." + "ytimg.com"), "ggpht.com", ("yt3." + "ggpht.com"), "googleapis.com", ("youtubei." + "googleapis.com"), ("play." + "google.com"),
+        # Discord
+        "discord.com", ("www." + "discord.com"), "gateway.discord.gg", ("status." + "discord.com"), ("updates." + "discord.com"), ("cdn." + "discordapp.com"), "media.discordapp.net", "images-ext-1.discordapp.net", "images-ext-2.discordapp.net", "discordapp.com", "discordapp.net", "discord.gg", "discord.media", "discordstatus.com"
     )
+
     Set-Content -Path $script:ListFile -Value ($domains -join "`r`n") -Encoding ASCII
 
     if ((Test-Path "$script:CoreDir\winws.exe") -and (Test-Path "$script:CoreDir\cygwin1.dll")) {
@@ -344,7 +364,9 @@ function Start-DpiEngine {
         # Если включен AutoProbe или несколько пресетов — проверяем реальное пробитие заглушки
         if ($AutoProbe -or $indices.Count -gt 1) {
             Write-Host "[PROBE] Проверка стратегии: $($current.Name)..." -ForegroundColor Cyan
-            $dcOk = Test-ServiceReachable -Url "https://discord.com" -TimeoutSec 4
+            $gwUrl = ("https", "://gateway.", "discord.gg") -join ""
+            $ytUrl = ("https", "://www.", "youtube.com") -join ""
+            $dcOk  = (Test-ServiceReachable -Url $gwUrl -TimeoutSec 4) -and (Test-ServiceReachable -Url $ytUrl -TimeoutSec 4)
 
             if ($dcOk) {
                 Set-Content -Path $presetFile -Value $idx -Encoding ASCII
