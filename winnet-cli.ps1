@@ -44,14 +44,14 @@ function Show-WinNetMenu {
     }
 
     Write-Host "============================================================" -ForegroundColor DarkCyan
-    Write-Host "               WinNet-Toolkit v3.4 Control Panel            " -ForegroundColor Cyan
+    Write-Host "             WinNet-Toolkit v4.0.2 Control Panel            " -ForegroundColor Cyan
     Write-Host "============================================================" -ForegroundColor DarkCyan
     Write-Host "  DPI-ядро: [$winwsState ($presetInfo)]  |  Watchdog: [$wdState]" -ForegroundColor Gray
     if ($configs.Count -gt 0) {
         Write-Host "  Импортированные профили: $($configs.Name -join ', ')" -ForegroundColor Green
     }
     Write-Host "------------------------------------------------------------" -ForegroundColor DarkCyan
-    Write-Host "  [1] Автонастройка в 1 клик (DNS + YouTube + AutoProbe + Watchdog)"
+    Write-Host "  [1] Автонастройка в 1 клик (DNS + TG/Discord/YT + AutoProbe)"
     Write-Host "  [2] Запустить диагностику сети (netcheck)"
     Write-Host "  [3] Запустить / Переподобрать стратегию DPI-ядра (AutoProbe)"
     Write-Host "  [4] Остановить DPI-ядро"
