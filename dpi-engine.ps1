@@ -1,7 +1,7 @@
 ﻿<#
 .SYNOPSIS
-    WinNet-Toolkit DPI Engine v3.2: Автономный контроллер обхода SNI-блокировок
-    с верификацией SHA256, централизованным логированием, откатом (Rollback) и автозапуском.
+    WinNet-Toolkit DPI Engine v3.3 Hardened: Автономный контроллер обхода SNI-блокировок
+    с жёстким контролем прав доступа (ACL), верификацией SHA256, ротацией логов и откатом (Rollback).
 #>
 
 #Requires -Version 5.1
@@ -24,7 +24,6 @@ function Write-WinNetLog {
     $logDir = Split-Path -Path $script:LogFile -Parent
     if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Force -Path $logDir | Out-Null }
 
-    # Ротация лога при достижении 5 МБ
     if ((Test-Path $script:LogFile) -and ((Get-Item $script:LogFile).Length -gt 5MB)) {
         Move-Item -Path $script:LogFile -Destination "$script:LogFile.old" -Force
     }
@@ -33,13 +32,39 @@ function Write-WinNetLog {
     Add-Content -Path $script:LogFile -Value "[$timestamp] [$Level] $Message" -Encoding UTF8
 }
 
+function Set-StrictFolderAcl {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$TargetPath)
+
+    if (-not (Test-Path $TargetPath)) { return }
+    try {
+        $acl = Get-Acl -Path $TargetPath
+        # Отключаем наследование прав от C:\ProgramData, чтобы обычные пользователи не могли подменить файлы для SYSTEM
+        $acl.SetAccessRuleProtection($true, $false)
+
+        $adminSid  = New-Object System.Security.Principal.SecurityIdentifier("S-1-5-32-544") # Administrators
+        $systemSid = New-Object System.Security.Principal.SecurityIdentifier("S-1-5-18")     # Local SYSTEM
+        $usersSid  = New-Object System.Security.Principal.SecurityIdentifier("S-1-5-32-545") # Users (только чтение)
+
+        $inheritFlags = [System.Security.AccessControl.InheritanceFlags]"ContainerInherit, ObjectInherit"
+        $propFlags    = [System.Security.AccessControl.PropagationFlags]::None
+
+        $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($adminSid,  "FullControl", $inheritFlags, $propFlags, "Allow")))
+        $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($systemSid, "FullControl", $inheritFlags, $propFlags, "Allow")))
+        $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($usersSid,  "ReadAndExecute", $inheritFlags, $propFlags, "Allow")))
+
+        Set-Acl -Path $TargetPath -AclObject $acl
+    } catch {
+        Write-WinNetLog "Предупреждение при установке ACL на ${TargetPath}: $($_.Exception.Message)" "WARN"
+    }
+}
+
 function Backup-NetworkState {
     [CmdletBinding()]
     param()
     New-Item -ItemType Directory -Force -Path $script:BackupDir | Out-Null
     $backupFile = Join-Path $script:BackupDir "network-backup.json"
 
-    # Идемпотентность: сохраняем только исходное состояние, не перезаписывая существующий снимок
     if (Test-Path $backupFile) {
         Write-WinNetLog "Резервная копия сетевых параметров уже существует." "INFO"
         return
@@ -52,13 +77,24 @@ function Backup-NetworkState {
         if ($dnsInfo) { $dnsServers = @($dnsInfo.ServerAddresses) }
     }
 
+    # Безопасное чтение реестра без падения в Set-StrictMode -Version Latest
+    $getRegSafe = {
+        param([string]$RegPath, [string]$PropName)
+        if (-not (Test-Path $RegPath)) { return $null }
+        try {
+            return Get-ItemPropertyValue -Path $RegPath -Name $PropName -ErrorAction Stop
+        } catch {
+            return $null
+        }
+    }
+
     $state = @{
         Timestamp     = (Get-Date).ToString('o')
         InterfaceName = if ($activeAdapter) { $activeAdapter.Name } else { $null }
         DnsServers    = $dnsServers
-        ChromeQuic    = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Google\Chrome" -Name "QuicAllowed" -ErrorAction SilentlyContinue).QuicAllowed
-        EdgeQuic      = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Edge" -Name "QuicAllowed" -ErrorAction SilentlyContinue).QuicAllowed
-        YandexQuic    = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Policies\YandexBrowser" -Name "QuicAllowed" -ErrorAction SilentlyContinue).QuicAllowed
+        ChromeQuic    = & $getRegSafe "HKLM:\SOFTWARE\Policies\Google\Chrome" "QuicAllowed"
+        EdgeQuic      = & $getRegSafe "HKLM:\SOFTWARE\Policies\Microsoft\Edge" "QuicAllowed"
+        YandexQuic    = & $getRegSafe "HKLM:\SOFTWARE\Policies\YandexBrowser" "QuicAllowed"
     }
 
     $state | ConvertTo-Json -Depth 3 | Set-Content -Path $backupFile -Encoding UTF8
@@ -72,7 +108,9 @@ function Restore-NetworkState {
     if (-not (Test-Path $backupFile)) {
         Write-Host "[WARN] Резервная копия не найдена. Сброс DNS на автоматический режим (DHCP)." -ForegroundColor Yellow
         $adapter = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.Virtual -eq $false } | Select-Object -First 1
-        if ($adapter) { Set-DnsClientServerAddress -InterfaceIndex $adapter.ifIndex -ResetServerAddresses }
+        if ($adapter) {
+            Set-DnsClientServerAddress -InterfaceIndex $adapter.ifIndex -ResetServerAddresses
+        }
     } else {
         $state = Get-Content -Path $backupFile -Raw | ConvertFrom-Json
         if ($state.InterfaceName) {
@@ -134,8 +172,8 @@ function Initialize-DpiCore {
     param()
 
     New-Item -ItemType Directory -Force -Path $script:CoreDir | Out-Null
+    Set-StrictFolderAcl -TargetPath $script:BaseDir
 
-    # 1. Формирование актуального списка целевых доменов (Telegram, YouTube, Discord)
     $domains = @(
         "telegram.org", "t.me", "telegram.me", "tdesktop.com", "telegra.ph", "telesco.pe", "cdn-telegram.org",
         "youtube.com", "googlevideo.com", "ytimg.com", "ggpht.com", "youtu.be", "googleapis.com",
@@ -147,8 +185,8 @@ function Initialize-DpiCore {
         return $true
     }
 
-    # 2. Целевой локальный поиск бинарников ядра
-    $searchPaths = @("C:\zapret", "D:\zapret", "$env:USERPROFILE\Downloads", "$env:USERPROFILE\Desktop", "$env:LOCALAPPDATA\WinNet-Toolkit\core") | Where-Object { Test-Path $_ }
+    # Целевой локальный поиск бинарников ядра (исключаем ненадёжные общие папки)
+    $searchPaths = @("C:\zapret", "D:\zapret", "$env:LOCALAPPDATA\WinNet-Toolkit\core") | Where-Object { Test-Path $_ }
     $localWinws = $searchPaths | ForEach-Object {
         Get-ChildItem -Path $_ -Filter "winws.exe" -Recurse -ErrorAction SilentlyContinue
     } | Select-Object -First 1
@@ -165,31 +203,30 @@ function Initialize-DpiCore {
         }
     }
 
-    # 3. Загрузка из официального репозитория GitHub с верификацией SHA256
+    # Загрузка из официального репозитория GitHub с верификацией SHA256
     Write-Host "[INFO] Загрузка ядра из официального репозитория bol-van/zapret..." -ForegroundColor Cyan
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    $headers = @{ "User-Agent" = "WinNet-Toolkit/3.2" }
-    $apiUrl = "https://github.com"
+    $headers = @{ "User-Agent" = "WinNet-Toolkit/3.3" }
+    $apiUrl  = ("https", "://api.", "github.com", "/repos/bol-van/zapret/releases/latest") -join ""
 
     try {
-        $release = Invoke-RestMethod -Uri $apiUrl -Headers $headers -TimeoutSec 15
-        $asset = $release.assets | Where-Object { $_.name -like "*win64.zip" -or $_.name -like "*.zip" } | Select-Object -First 1
+        $release  = Invoke-RestMethod -Uri $apiUrl -Headers $headers -TimeoutSec 15
+        $asset    = $release.assets | Where-Object { $_.name -like "*win64.zip" -or $_.name -like "*.zip" } | Select-Object -First 1
         $shaAsset = $release.assets | Where-Object { $_.name -like "*sha256*" } | Select-Object -First 1
 
         if (-not $asset) { throw "Установочный архив не найден в последнем релизе." }
 
-        $zipPath = "$env:TEMP\zapret_core.zip"
-        $extractPath = "$env:TEMP\zapret_extract"
+        $zipPath     = Join-Path $env:TEMP ("zapret_" + [guid]::NewGuid().ToString("N") + ".zip")
+        $extractPath = Join-Path $env:TEMP ("zapret_ext_" + [guid]::NewGuid().ToString("N"))
 
         Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zipPath -Headers $headers -TimeoutSec 30 -UseBasicParsing
 
-        # Верификация SHA256 контрольной суммы
         if ($shaAsset) {
-            $shaContent = Invoke-RestMethod -Uri $shaAsset.browser_download_url -Headers $headers -TimeoutSec 10
+            $shaContent   = Invoke-RestMethod -Uri $shaAsset.browser_download_url -Headers $headers -TimeoutSec 10
             $expectedLine = ($shaContent -split "`n") | Where-Object { $_ -match [regex]::Escape($asset.name) } | Select-Object -First 1
             if ($expectedLine -match '([a-fA-F0-9]{64})') {
-                $expectedHash = $matches.ToUpperInvariant()
-                $actualHash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToUpperInvariant()
+                $expectedHash = $matches[1].ToUpperInvariant()
+                $actualHash   = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToUpperInvariant()
                 if ($actualHash -ne $expectedHash) {
                     Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
                     Write-WinNetLog "SECURITY ALERT: Несовпадение SHA256 для $($asset.name)." "ERROR"

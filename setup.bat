@@ -1,7 +1,6 @@
 @echo off
 title WinNet-Toolkit Installer
 
-:: Check for Administrator privileges without parentheses blocks
 net session >nul 2>&1
 if %errorlevel% equ 0 goto :RUN_INSTALL
 

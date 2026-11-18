@@ -1,10 +1,10 @@
 ﻿<#
 .SYNOPSIS
-    WinNet-Toolkit Diagnostics v3.2: Комплексный аудит сетевого стека Windows 10/11.
+    WinNet-Toolkit Diagnostics v3.3: Комплексный аудит сетевого стека Windows 10/11.
 .DESCRIPTION
     Выполняет 5-ступенчатую диагностику:
-    1. Проверка статуса локальных модулей (DPI-движок, Watchdog, импортированные .yaml/.conf профили).
-    2. Определение внешнего IP-адреса и провайдера (ISP) по HTTPS.
+    1. Проверка статуса локальных модулей (DPI-ядро, Watchdog, виртуальные TUN-адаптеры, профили).
+    2. Определение внешнего IP-адреса и провайдера (ISP) с резервными HTTPS-источниками.
     3. Аудит DNS-резолвинга и защиты от спуфинга.
     4. Проверка реального TLS Handshake до Telegram, YouTube и Discord.
     5. Замер сетевой задержки (Ping) до контрольных узлов.
@@ -17,10 +17,12 @@ $ErrorActionPreference = 'Stop'
 $script:BaseDir   = "$env:ProgramData\WinNet-Toolkit"
 $script:ConfigDir = "$script:BaseDir\configs"
 
-# Подгружаем базовые функции (Set-CleanDNS, Optimize-YouTubeStream, Rollback), если модуль развернут
-$dpiModule = Join-Path $script:BaseDir "dpi-engine.ps1"
-if (Test-Path $dpiModule) {
-    . $dpiModule
+# Идемпотентная подгрузка базового модуля (без повторного чтения при вызове из winnet-cli)
+if (-not (Get-Command Write-WinNetLog -ErrorAction SilentlyContinue)) {
+    $dpiModule = Join-Path $script:BaseDir "dpi-engine.ps1"
+    if (Test-Path $dpiModule) {
+        . $dpiModule
+    }
 }
 
 function Invoke-NetCheck {
@@ -29,7 +31,7 @@ function Invoke-NetCheck {
 
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-    Write-Host "`n================ WinNet-Toolkit Diagnostics v3.2 ================" -ForegroundColor DarkCyan
+    Write-Host "`n================ WinNet-Toolkit Diagnostics v3.3 ================" -ForegroundColor DarkCyan
 
     # --- Блок 1: Аудит локальных контуров защиты ---
     Write-Host "`n[1/5] Статус локальных модулей и маршрутизации..." -ForegroundColor Cyan
@@ -59,23 +61,35 @@ function Invoke-NetCheck {
         }
     }
 
-    # --- Блок 2: Внешний IP и провайдер ---
+    # --- Блок 2: Внешний IP и провайдер (с каскадным резервированием) ---
     Write-Host "`n[2/5] Внешний IP и провайдер..." -ForegroundColor Cyan
+    $ipResolved = $false
     try {
-        $ipInfo = Invoke-RestMethod -Uri "https://ipwho.is" -TimeoutSec 5
+        $ipInfo = Invoke-RestMethod -Uri "https://ipwho.is" -TimeoutSec 4
         if ($ipInfo.success) {
             Write-Host "[OK] IP: $($ipInfo.ip) | Страна: $($ipInfo.country) ($($ipInfo.city)) | ISP: $($ipInfo.connection.isp)" -ForegroundColor Green
-        } else {
-            Write-Host "[WARN] Сервис определения IP вернул некорректный ответ." -ForegroundColor Yellow
+            $ipResolved = $true
         }
-    } catch {
-        Write-Host "[WARN] Не удалось определить внешний IP (таймаут или блокировка)." -ForegroundColor Yellow
+    } catch { }
+
+    if (-not $ipResolved) {
+        try {
+            $fallbackIp = (Invoke-RestMethod -Uri "https://ipify.org" -TimeoutSec 4).ip
+            if ($fallbackIp) {
+                Write-Host "[OK] Внешний IP: $fallbackIp (резервный узел ipify)" -ForegroundColor Green
+                $ipResolved = $true
+            }
+        } catch { }
+    }
+
+    if (-not $ipResolved) {
+        Write-Host "[WARN] Не удалось определить внешний IP (таймаут или отсутствие сети)." -ForegroundColor Yellow
     }
 
     # --- Блок 3: Проверка DNS-резолвинга ---
     Write-Host "`n[3/5] Проверка DNS-резолвинга..." -ForegroundColor Cyan
     $dnsFailed = $false
-    foreach ($domain in @("telegram.org", "youtube.com", "googlevideo.com", "discord.com")) {
+    foreach ($domain in @("telegram.org", "www.youtube.com", "googlevideo.com", "discord.com")) {
         $res = Resolve-DnsName -Name $domain -Type A -DnsOnly -ErrorAction SilentlyContinue | Where-Object { $_.QueryType -eq 'A' } | Select-Object -First 1
         if ($res) {
             Write-Host "[OK] $domain -> $($res.IPAddress)" -ForegroundColor Green
@@ -85,14 +99,14 @@ function Invoke-NetCheck {
         }
     }
     if ($dnsFailed) {
-        Write-Host "  -> Рекомендация: выполните Set-CleanDNS (пункт 3 в меню winnet)." -ForegroundColor DarkYellow
+        Write-Host "  -> Рекомендация: выполните настройку DNS (пункт 1 или 5 в меню winnet)." -ForegroundColor DarkYellow
     }
 
     # --- Блок 4: Проверка HTTPS-доступности (TLS Handshake) ---
     Write-Host "`n[4/5] Проверка HTTPS-доступности сервисов (TLS Handshake)..." -ForegroundColor Cyan
     $targets = @(
         @{ Name = "Telegram Web"; Url = "https://telegram.org" },
-        @{ Name = "YouTube";      Url = "https://youtube.com" },
+        @{ Name = "YouTube";      Url = "https://www.youtube.com" },
         @{ Name = "Discord";      Url = "https://discord.com" }
     )
     $tlsFailed = $false
@@ -106,7 +120,7 @@ function Invoke-NetCheck {
         }
     }
     if ($tlsFailed -and -not $winwsProc -and -not $tunAdapter) {
-        Write-Host "  -> Рекомендация: запустите DPI-ядро командой Start-DpiEngine (пункт 1 в меню winnet)." -ForegroundColor DarkYellow
+        Write-Host "  -> Рекомендация: запустите DPI-ядро (пункт 1 или 3 в меню winnet)." -ForegroundColor DarkYellow
     }
 
     # --- Блок 5: Замер задержки (Ping) ---
