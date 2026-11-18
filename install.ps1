@@ -32,7 +32,7 @@ $InstallDir = "$env:ProgramData\WinNet-Toolkit"
 $BinDir     = "$InstallDir\bin"
 $ConfigDir  = "$InstallDir\configs"
 $BackupDir  = "$InstallDir\backup"
-$RepoBase   = "https://githubusercontent.com"
+$RepoBase   = ("https", "://raw.", "githubusercontent.com", "/allinvvs/WinNet-Toolkit/main") -join ""
 $Modules    = @("netcheck.ps1", "dpi-engine.ps1", "watchdog.ps1", "winnet-cli.ps1")
 
 New-Item -ItemType Directory -Force -Path $InstallDir, $BinDir, $ConfigDir, $BackupDir | Out-Null
